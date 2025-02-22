@@ -197,11 +197,29 @@ const saveFavList = async (mid) => {
 
 
 /**
- * 备份单个收藏夹的所有视频
+ * 备份单个收藏夹的所有视频信息
  * 
- * 对于获取到的每条视频:
- *     如果已失效: 跳过，防止失效信息替换备份中的有效信息
- *     如果未失效: 备份中不存在，则添加到备份中；如果已存在，则更新备份数据
+ * 单个收藏夹内可能发生的所有情况:
+ *     1. 新增收藏
+ *     2. 取消收藏
+ *     3. 视频失效
+ * 
+ * 全量备份逻辑:
+ *   准备一个空的集合 updates
+ *   遍历收藏夹中的所有视频，可能发生的所有情况:
+ *     1. 有效视频，备份存在 -> 左边存入集合
+ *     2. 有效视频，备份不存在 -> 左边存入集合（新增收藏）
+ *     3. 失效视频，备份存在 -> 右边存入集合（视频失效）
+ *     4. 失效视频，备份不存在 -> 跳过
+ *     5. 没有视频，备份存在 -> 跳过（取消收藏）
+ *   用 updates 去替换掉整个收藏夹的备份
+ * 
+ * 
+ * 可以保证:
+ *     1. 幂等性（多次执行，备份的最终状态是一致的）
+ *     2. 排除掉未备份的失效视频，收藏夹中的视频和备份视频信息之间是 1:1 对应的关系
+ *     2. 已备份的失效视频信息不会丢失，除非取消收藏
+ * 
  * 
  * @param favId 收藏夹ID 
  */
@@ -237,34 +255,35 @@ const backupFavMedias = async (favId) => {
       page += 1;
     } while (res.data?.has_more);
 
-
-    // 建立 bvid -> media 的映射
-    const updates = mediaList.reduce((acc, media) => {
-      // 跳过已失效的视频，防止用失效信息去更新备份数据
-      if (media.attr === 0) {
-        acc[media.bvid] = media;   
-      }
-      return acc;
-    }, {});
-
     // 获取所有收藏夹的备份
     let { [STORAGE_BACKUP_KEY]: medias } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
     medias = medias || {};    // 应对 undefined 的情况
+    const favMedias = medias[favId] || {};  // 当前收藏夹的备份数据
 
-    // 更新其中的某个收藏夹备份，对于每条视频，不存在则添加，已存在则更新，其他已有备份数据保持不变
+    let updates = {};
+    for (const media of mediaList) {
+      if (media.attr === 0) {
+        // 有效视频，不管备份存不存在，都是左边存入
+        updates[media.bvid] = media;
+      } else {
+        // 失效视频，只有备份存在，才右边存入
+        if (favMedias[media.bvid]) {
+          updatedMedias[media.bvid] = favMedias[media.bvid];
+        }
+      }
+    }
+
+    // 更新单个收藏夹的备份
     const updatedMedias = {
       ...medias,
-      [favId]: {          
-        ...medias[favId],
-        ...updates,      
-      },
-    };
+      [favId]: updates,
+    }
 
     // 保存更新
     await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedMedias });
 
   } catch(err) {
-    console.error("获取单个收藏夹视频列表时出错:",err);
+    console.error("备份单个收藏夹时出错:",err);
     throw err;
   }
 };
@@ -272,6 +291,13 @@ const backupFavMedias = async (favId) => {
 
 /**
  * 备份所有收藏夹
+ * 
+ * 收藏夹列表可能发生的所有情况:
+ *     1. 新增收藏夹
+ *     2. 删除收藏夹
+ * 
+ * 两种情况需要增加哪些处理？（TODO）
+ * 
  */
 const backupAllFavMedias = async () => {
   try {
@@ -284,7 +310,7 @@ const backupAllFavMedias = async () => {
     // const tasks = favlist.map(fav => backupFavMedias(fav.id, fav.title));
     // await Promise.all(tasks);
   } catch(err) {
-    console.error("备份所有收藏夹视频出错:",err);
+    console.error("备份所有收藏夹时出错:",err);
     throw err;
   }
 }
