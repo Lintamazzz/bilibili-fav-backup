@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BiliBili Fav Backup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "自动备份用户B站收藏夹中的视频信息，当视频失效时，使用备份的标题替换「已失效视频」",
   "permissions": [
     "webRequest","storage", "unlimitedStorage"

@@ -268,7 +268,7 @@ const backupFavMedias = async (favId) => {
       } else {
         // 失效视频，只有备份存在，才右边存入
         if (favMedias[media.bvid]) {
-          updatedMedias[media.bvid] = favMedias[media.bvid];
+          updates[media.bvid] = favMedias[media.bvid];
         }
       }
     }
@@ -296,12 +296,23 @@ const backupFavMedias = async (favId) => {
  *     1. 新增收藏夹
  *     2. 删除收藏夹
  * 
- * 两种情况需要增加哪些处理？（TODO）
- * 
  */
 const backupAllFavMedias = async () => {
   try {
     const { [STORAGE_FAVLIST_KEY]: favlist } = await chrome.storage.local.get([STORAGE_FAVLIST_KEY])
+    let { [STORAGE_BACKUP_KEY]: medias } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
+    medias = medias || {};
+    
+    // 如果收藏夹被删除，不再保留其备份
+    for (const favId of Object.keys(medias)) {
+      if (!favlist.some(fav => fav.id === parseInt(favId))) {
+        delete medias[favId];
+        // console.log("delete:", favId)
+      }
+    }
+    await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: medias });
+
+    // 备份所有收藏夹
     for (const fav of favlist) {
       await backupFavMedias(fav.id);
     }
@@ -317,8 +328,8 @@ const backupAllFavMedias = async () => {
 
 const backup = async () => {
   const mid = await saveMid();  
-  await saveFavList(mid);
-  await backupAllFavMedias()
+  await saveFavList(mid);     // 获取最新的收藏夹列表
+  await backupAllFavMedias()  // 全量备份
 };
 
 
