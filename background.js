@@ -1,8 +1,7 @@
 /**
  * background.js
  * 
- * 何时运行：插件安装、启用、打开浏览器、更新/重新加载插件（后台运行 自动执行一次备份）
- * 何时停止：插件移除、禁用、关闭浏览器
+ * 自动备份时机：安装或更新插件、使用某个用户资料启动Chrome浏览器
  * 
  * 注意：
  *   移除插件会清空 Chrome Extension Storage 中的备份数据
@@ -333,9 +332,18 @@ const backup = async () => {
 };
 
 
-// 安装或更新插件、打开浏览器时自动执行一次备份
-function main() {
-  backup();  
-}
+/**
+ * 限定自动备份的时机:
+ *     chrome.runtime.onInstalled: 安装或更新插件
+ *     chrome.runtime.onStartup: 使用某个user profile启动浏览器
+ * 
+ * 否则从 idle 中唤醒变为 active 也会执行一次
+ * 参考: https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle
+ */
+chrome.runtime.onInstalled.addListener(() => {
+  backup();
+});
 
-main();   
+chrome.runtime.onStartup.addListener(() => {
+  backup();
+});
