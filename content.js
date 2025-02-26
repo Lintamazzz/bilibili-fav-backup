@@ -1,3 +1,5 @@
+let debounceTimer = null;
+
 chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
 
     if (request.type === "replaceInvalidTitles") {
@@ -5,25 +7,12 @@ chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
         const invalidMedias = request.data;
         // console.log("备份数据:", invalidMedias);
 
-        
-        try {
-            // 获取当前页面中所有视频标题对应的<a>标签列表
-            const titles = await getTitles();
-            // console.log("视频标题列表:", titles);
-
-            // 替换页面上的失效视频标题
-            invalidMedias.forEach(media => {
-                let title = titles.find(title => title.href.includes(media.bvid)); 
-                if (title) {
-                    title.textContent = media.title
-                } else {
-                    console.error(`未找到匹配的元素: ${media.bvid}`)
-                }
-            })
-        } catch (err) {
-            console.error("替换失效标题失败:", err);
-            throw err;
-        }        
+        // 切换收藏夹时B站可能会连发两个相同的分页请求（不知道为什么）
+        // 防抖确保接收到多个连续的消息时，只执行最后一个
+        if (debounceTimer) {
+            clearTimeout(debounceTimer); 
+        }
+        debounceTimer = setTimeout(() => replaceTitles(invalidMedias), 300); // 延迟 300ms 执行操作，期间收到相同消息不会重复执行
     }
 
 });
@@ -33,7 +22,7 @@ chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
  * 
  * @returns Promise<Array>
  */
-function getTitles() {
+const getTitles = () => {
     return new Promise((resolve, reject) => {
         const observer = new MutationObserver((mutationsList, observer) => {
             const titles = document.querySelectorAll('.fav-list-main .items .bili-video-card__details div[title] a');
@@ -54,4 +43,30 @@ function getTitles() {
             reject('获取 titles 超时');
         }, 5000); // 设置 5 秒超时
     })
+}
+
+/**
+ * 通过修改 DOM 来替换页面上的失效视频标题
+ * 
+ * @param {Array} invalidMedias 页面上的失效视频列表（其中标题已替换为备份标题）
+ */
+const replaceTitles = async (invalidMedias) => {
+    try {
+        // 获取当前页面中所有视频标题对应的<a>标签列表
+        const titles = await getTitles();
+        // console.log("视频标题列表:", titles);
+
+        // 替换页面上的失效视频标题
+        invalidMedias.forEach(media => {
+            let title = titles.find(title => title.href.includes(media.bvid)); 
+            if (title) {
+                title.textContent = media.title
+            } else {
+                console.error(`未找到匹配的元素: ${media.bvid}`)
+            }
+        })
+    } catch (err) {
+        console.error("替换失效标题失败:", err);
+        throw err;
+    }
 }
