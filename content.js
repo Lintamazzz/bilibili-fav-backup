@@ -1,4 +1,7 @@
 let debounceTimer = null;
+const VIDEO_TITLE_SELECTOR = ".fav-list-main .items .bili-video-card__details div[title] a";
+
+
 
 chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
 
@@ -23,9 +26,14 @@ chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
  * @returns Promise<Array>
  */
 const getTitles = () => {
+    // 先尝试直接获取，没找到再监听变化
+    const titles = document.querySelectorAll(VIDEO_TITLE_SELECTOR);
+    if (titles.length > 0) {
+        return [...titles];
+    } 
     return new Promise((resolve, reject) => {
         const observer = new MutationObserver((mutationsList, observer) => {
-            const titles = document.querySelectorAll('.fav-list-main .items .bili-video-card__details div[title] a');
+            const titles = document.querySelectorAll(VIDEO_TITLE_SELECTOR);
             if (titles.length > 0) {
                 resolve([...titles]);    // NodeList 转为 Array
             } else {
