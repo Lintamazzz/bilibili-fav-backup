@@ -99,6 +99,13 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
         return;
       }
 
+      // 检查 url 中的 media_id 参数（发现B站可能会发送 media_id = 0 这种无效请求，不知道为什么，这种请求需要过滤掉）
+      const url = new URL(details.url);
+      const mediaId = url.searchParams.get('media_id');
+      if (!mediaId || mediaId === "0") {
+        return;
+      }
+
       const res = await fetchFromExt(details.url, details.method);
       const invalidMedias = res.data?.medias?.filter((media) => media.attr != 0); // attr: 是否失效 0-正常 1-其他原因删除 9-up主自己删除
 
