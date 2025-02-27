@@ -84,6 +84,8 @@ const fetchFromExt = async (url, method) => {
  *  4.发送消息给content.js 用备份的视频标题替换"已失效视频"
  * 
  */
+let lastUrl = null;
+
 chrome.webRequest.onBeforeSendHeaders.addListener(
   async (details) => {
     try {
@@ -98,6 +100,13 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
         // console.log("This is an extension request, skip it.");
         return;
       }
+
+      // 过滤掉重复请求：切换收藏夹时，B站可能会连发两个相同的分页请求（不知道为什么）
+      if (lastUrl === details.url) {
+        // console.log("This is a duplicate request, skip it.");
+        return;
+      }
+      lastUrl = details.url;
 
       // 检查 url 中的 media_id 参数（发现B站可能会发送 media_id = 0 这种无效请求，不知道为什么，这种请求需要过滤掉）
       const url = new URL(details.url);

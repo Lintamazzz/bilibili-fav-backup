@@ -10,8 +10,7 @@ chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
         const invalidMedias = request.data;
         // console.log("备份数据:", invalidMedias);
 
-        // 切换收藏夹时B站可能会连发两个相同的分页请求（不知道为什么）
-        // 防抖确保接收到多个连续的消息时，只执行最后一个
+        // 防抖处理：接收到多个连续的消息时，只执行最后一个，避免重复或不必要的DOM操作（连续相同的分页请求、快速切换收藏夹）
         if (debounceTimer) {
             clearTimeout(debounceTimer); 
         }
