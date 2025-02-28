@@ -68,6 +68,7 @@ const replaceTitles = async (invalidMedias) => {
             let title = titles.find(title => title.href.includes(media.bvid)); 
             if (title) {
                 title.textContent = media.title
+                title.title = media.intro
             } else {
                 console.error(`未找到匹配的元素: ${media.bvid}`)
             }
