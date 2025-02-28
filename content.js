@@ -68,7 +68,7 @@ const replaceTitles = async (invalidMedias) => {
             let title = titles.find(title => title.href.includes(media.bvid)); 
             if (title) {
                 title.textContent = media.title
-                title.title = media.intro
+                title.title = media.intro + `\n\n${media.attr === 9 ? "up主自己删除": "其他原因删除"}`
             } else {
                 console.error(`未找到匹配的元素: ${media.bvid}`)
             }
