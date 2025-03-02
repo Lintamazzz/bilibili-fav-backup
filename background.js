@@ -76,13 +76,15 @@ const fetchFromExt = async (url, method) => {
 /**
  * 记录上一次监听到的请求URL，用于过滤连续重复请求
  */
-let lastUrl = null;
-
+let lastRequestInfo = {
+  url: null,
+  timestamp: 0
+};
 
 /**
  * 验证是否要忽略该请求   
  * - 忽略插件发出的请求  
- * - 忽略连续重复请求  
+ * - 忽略连续重复请求（300ms内）  
  * - 忽略无效请求  
  * 
  * @param {Object} details - 请求详情
@@ -98,8 +100,12 @@ const needToSkipRequest = (details) => {
   if (isExtensionRequest) return true;
 
   // 2.忽略连续重复请求 (切换收藏夹时，B站可能会连发两个相同的分页请求，不知道为什么)
-  if (lastUrl === details.url) return true;
-  lastUrl = details.url;
+  const now = Date.now();
+  if (lastRequestInfo.url === details.url && now - lastRequestInfo.timestamp < 300) {
+    return true;
+  }
+  lastRequestInfo.url = details.url;
+  lastRequestInfo.timestamp = now;
 
   // 3.忽略无效请求 (初次打开收藏夹页面，B站可能会发送 list?media_id=0 这种无效请求，不知道为什么)
   const url = new URL(details.url);
