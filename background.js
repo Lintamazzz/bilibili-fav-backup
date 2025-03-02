@@ -34,17 +34,17 @@ const API_GET_FAVLIST = "https://api.bilibili.com/x/v3/fav/folder/created/list-a
  * @param {Object} sender - 发送消息的发送者信息
  * @param {Function} sendResponse - 发送响应的函数，用于向消息发送方发送响应
  */
-chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
-  // from content.js
-  if (request.type === "loadFinish") {
-    console.log("页面加载完成");
-    sendResponse({ msg: "msg received" });
-  }
-  // from popup.js
-  if (request.type === "buttonClicked") {
-    sendResponse({ msg: "msg received" });
-  }
-});
+// chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
+//   // from content.js
+//   if (request.type === "loadFinish") {
+//     console.log("页面加载完成");
+//     sendResponse({ msg: "msg received" });
+//   }
+//   // from popup.js
+//   if (request.type === "buttonClicked") {
+//     sendResponse({ msg: "msg received" });
+//   }
+// });
 
 
 
@@ -217,14 +217,21 @@ const saveMid = async () => {
 const saveFavList = async (mid) => {
   const res = await fetchFromExt(`${API_GET_FAVLIST}?up_mid=${mid}`);
 
-  const favlist = res.data?.list?.map((fav) => ({
+  // 检查响应格式是否符合预期 (list必须是数组、count不能为0)
+  if (!res.data || !Array.isArray(res.data.list) || !res.data.count) {
+    throw new Error("API 响应格式异常，可能是接口发生变化");
+  }
+
+  // 检查收藏夹列表是否为空、数据是否完整
+  const favlist = res.data.list.map((fav) => ({
     id: fav.id,             // 收藏夹ID
     cnt: fav.media_count,   // 收藏夹视频数量
     mid: fav.mid,           // 用户ID
     title: fav.title,       // 收藏夹标题
   }));
-  if (favlist === undefined) {
-    throw new Error("请求获取到的收藏夹列表为空");
+  // 进一步检查收藏夹列表是否为空、数据是否完整
+  if (!favlist.length || favlist.length !== res.data.count) {
+    throw new Error(`获取到的收藏夹列表有问题：应有 ${res.data.count} 个，实际获取到 ${favlist.length} 个`);
   }
 
   await chrome.storage.local.set({ [STORAGE_FAVLIST_KEY]: favlist});
@@ -258,7 +265,7 @@ const saveFavList = async (mid) => {
  *     2. 已备份的失效视频信息不会丢失，除非取消收藏  
  * 
  * 
- * @param favId 收藏夹ID 
+ * @param {string} favId 收藏夹ID 
  * @throws {Error} 分页请求响应数据为空
  */
 const backupOneFavFull = async (favId) => {
@@ -270,9 +277,9 @@ const backupOneFavFull = async (favId) => {
 
   do {
     res = await fetchFromExt(`${API_LIST_MEDIA}?media_id=${favId}&pn=${page}&ps=${pageSize}`);
-    // 可能会因为API变动或请求失败导致无响应数据，此时要作为异常抛出，否则会被认为是取消收藏
-    if (!res.data) {
-      throw new Error("分页请求响应数据为空");   
+    // 检查响应格式是否符合预期 (可能会因为API变动或请求失败导致无响应数据，此时要作为异常抛出，否则会误判为"所有视频都被取消收藏"，从而误删备份数据)
+    if (!res.data || res.data.info === undefined || res.data.medias === undefined) {
+      throw new Error("API 响应格式异常，可能是接口发生变化");   
     }
     const pageMedias = res.data.medias || [];    // 收藏夹内无视频时 medias = null
     // 对于每条视频，将备份以下信息，参数含义见：https://socialsisteryi.github.io/bilibili-API-collect/docs/fav/list.html
@@ -289,6 +296,20 @@ const backupOneFavFull = async (favId) => {
     page += 1;
   } while (res.data?.has_more);
 
+
+  // 二次确认，防止误删备份数据
+  if (mediaList.length === 0) {
+    // 如果一个视频都没获取到，需要进一步确认收藏夹是否真的为空
+    if (res.data.info.media_count > 0) {
+      throw new Error("收藏夹不为空但未获取到任何视频，可能是 API 异常");
+    }
+  } else {
+    // 进一步检查视频数量的完整性 (为什么要+1：这是B站的问题，有时候收藏夹里实际的视频数量就是莫名其妙比 count 要少一个)
+    if (mediaList.length + 1 < res.data.info.media_count) {
+      throw new Error(`收藏夹"${res.data.info.title}"(${favId})视频获取不完整：应有 ${res.data.info.media_count} 个视频，实际获取到 ${mediaList.length} 个视频`);  
+    }
+  }
+  
 
   // 2. 更新当前收藏夹备份
   let { [STORAGE_BACKUP_KEY]: backedUpFavs } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
