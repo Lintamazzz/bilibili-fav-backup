@@ -18,7 +18,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "replaceInvalidTitles") {
         const invalidMedias = request.data;
         // console.log("备份数据:", invalidMedias);
-        debouncedReplaceTitles(invalidMedias)
+
+        if (invalidMedias.length > 0) {
+            debouncedReplaceTitles(invalidMedias)
+        }
     }
 });
 
@@ -74,6 +77,7 @@ const replaceTitles = async (invalidMedias) => {
     try {
         const titles = await getTitles();
         // console.log("视频标题列表:", titles)
+
         invalidMedias.forEach(media => {
             let title = titles.find(title => title.href.includes(media.bvid)); 
             if (title) {
