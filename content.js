@@ -1,5 +1,6 @@
 /**
- * 用于选择当前收藏夹页面中所有视频标题的 CSS 选择器
+ * CSS 选择器  
+ * 用于获取当前收藏夹页面所有视频的标题元素
  */
 const VIDEO_TITLE_SELECTOR = ".fav-list-main .items .bili-video-card__details div[title] a";
 
@@ -68,7 +69,6 @@ const getTitles = () => {
  * @param {string} invalidMedias[].title - 备份标题
  * @param {string} invalidMedias[].intro - 视频简介
  * @param {number} invalidMedias[].attr - 是否失效 0-正常 1-其他原因删除 9-up主自己删除
- * @throws {Error} 替换失效标题失败
  */
 const replaceTitles = async (invalidMedias) => {
     try {
@@ -84,8 +84,7 @@ const replaceTitles = async (invalidMedias) => {
             }
         })
     } catch (err) {
-        console.error("替换失效标题失败:", err);
-        throw err;
+        console.error("替换失效标题出错:", err);
     }
 }
 
