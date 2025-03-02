@@ -19,7 +19,7 @@ const STORAGE_BACKUP_KEY = "all_medias";   // 所有收藏夹的视频信息备�
 const STORAGE_MID_KEY = "mid";             // 用户ID
 const STORAGE_FAVLIST_KEY = "favlist";     // 用户收藏夹列表
 const API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list"             // 分页获取收藏夹视频
-const MATCH_API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list*"      // 监听请求匹配   
+const MATCH_API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list?*"     // 监听请求匹配   
 const API_GET_MYINFO = "https://api.bilibili.com/x/space/v2/myinfo"                  // 获取用户信息
 const API_GET_FAVLIST = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"  // 获取用户的收藏夹列表      
 
