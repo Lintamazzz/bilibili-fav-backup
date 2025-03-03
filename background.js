@@ -1,7 +1,9 @@
 /**
  * background.js
  * 
- * 自动备份时机：安装或更新插件、使用某个用户资料启动 Chrome 浏览器
+ * 自动备份时机:  
+ *    安装或更新插件 - 执行一次全量备份
+ *    使用某个用户资料启动 Chrome 浏览器 - 如果距离上一次全量备份的时间间隔超过 FULL_BACKUP_INTERVAL，则执行全量备份，否则执行增量备份
  * 
  * 注意：
  *   移除插件会清空 Chrome Extension Storage 中的备份数据
@@ -18,33 +20,17 @@
 const STORAGE_BACKUP_KEY = "all_medias";   // 所有收藏夹的视频信息备份
 const STORAGE_MID_KEY = "mid";             // 用户ID
 const STORAGE_FAVLIST_KEY = "favlist";     // 用户收藏夹列表
+const STORAGE_LAST_FULL_BACKUP_TIME = "last_full_backup_time";  // 上次全量备份的时间戳
+const FULL_BACKUP_INTERVAL = 24 * 60 * 60 * 1000;               // 全量备份的最小时间间隔（24小时）
+const STORAGE_INVALID_IDS_KEY = "invalid_ids";                  // 已知的失效视频ID集合
+
 const API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list"             // 分页获取收藏夹视频
 const MATCH_API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list?*"     // 监听请求匹配   
 const API_GET_MYINFO = "https://api.bilibili.com/x/space/v2/myinfo"                  // 获取用户信息
 const API_GET_FAVLIST = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"  // 获取用户的收藏夹列表      
+const API_GET_FAV_IDS = "https://api.bilibili.com/x/v3/fav/resource/ids"             // 获取收藏夹所有视频的ID
+const API_GET_MEDIA_INFO = "https://api.bilibili.com/x/web-interface/view"           // 获取单个视频详细信息
 
-
-
-
-/**
- * 监听消息传递事件（TODO）
- * 当接收到消息时，根据消息类型执行相应的处理
- * 
- * @param {Object} request - 发送的消息对象，包含消息类型等信息
- * @param {Object} sender - 发送消息的发送者信息
- * @param {Function} sendResponse - 发送响应的函数，用于向消息发送方发送响应
- */
-// chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
-//   // from content.js
-//   if (request.type === "loadFinish") {
-//     console.log("页面加载完成");
-//     sendResponse({ msg: "msg received" });
-//   }
-//   // from popup.js
-//   if (request.type === "buttonClicked") {
-//     sendResponse({ msg: "msg received" });
-//   }
-// });
 
 
 
@@ -212,7 +198,7 @@ const saveMid = async () => {
  * 
  * @param {string} mid 用户ID
  * @returns {Promise<Array>} 用户收藏夹列表
- * @throws {Error} 请求获取到的收藏夹列表为空
+ * @throws {Error} API响应格式异常、获取到的收藏夹数量不完整
  */
 const saveFavList = async (mid) => {
   const res = await fetchFromExt(`${API_GET_FAVLIST}?up_mid=${mid}`);
@@ -222,14 +208,13 @@ const saveFavList = async (mid) => {
     throw new Error("API 响应格式异常，可能是接口发生变化");
   }
 
-  // 检查收藏夹列表是否为空、数据是否完整
+  // 检查收藏夹列表是否为空、数据是否完整，防止误删备份
   const favlist = res.data.list.map((fav) => ({
     id: fav.id,             // 收藏夹ID
     cnt: fav.media_count,   // 收藏夹视频数量
     mid: fav.mid,           // 用户ID
     title: fav.title,       // 收藏夹标题
   }));
-  // 进一步检查收藏夹列表是否为空、数据是否完整
   if (!favlist.length || favlist.length !== res.data.count) {
     throw new Error(`获取到的收藏夹列表有问题：应有 ${res.data.count} 个，实际获取到 ${favlist.length} 个`);
   }
@@ -238,6 +223,132 @@ const saveFavList = async (mid) => {
   return favlist;
 };
 
+
+/**
+ * 获取单个视频的信息
+ * 
+ * @param {string} bvid - 视频的BV号
+ * @returns {Promise<Object>} 视频信息
+ * @throws {Error} API响应格式异常、请求错误
+ */
+const getMediaInfo = async (bvid) => {
+  // API文档：https://socialsisteryi.github.io/bilibili-API-collect/docs/video/info.html
+  const res = await fetchFromExt(`${API_GET_MEDIA_INFO}?bvid=${bvid}`);
+
+  // 失效视频
+  if (res.code !== 0) {
+    if (res.code === -404)  return { attr: 1 };  // 一般是其他原因删除
+    if (res.code === 62002) return { attr: 9 };  // 一般是up主自己删除
+    if (res.code === 62012) return { attr: -1};  // 仅up主可见
+    throw new Error(`请求错误, 状态码: ${res.code}`);
+  }
+
+  // 检查响应格式
+  if (!res.data || !res.data.owner) {
+    throw new Error(`API 响应格式不符合预期`)
+  }
+
+  // 有效视频
+  return {
+    bvid: res.data.bvid,    // 视频的BV号
+    avid: res.data.aid,     // 视频的AV号
+    title: res.data.title,  // 视频标题
+    attr: 0,                // 是否失效 0-正常 1-其他原因删除 9-up主自己删除
+    up: {
+      mid: res.data.owner.mid,    // up主id
+      name: res.data.owner.name,  // up主名称
+    }
+  }
+}
+
+
+/**
+ * 增量备份单个文件夹 (只考虑新增收藏)  
+ * 
+ * 增量备份逻辑:  
+ *   获取收藏夹内所有视频的 ID 列表，遍历每一个 ID:    
+ *     1. 视频未备份 -> 查询视频详情，如果视频有效，添加到备份中   
+ *     2. 视频已备份 -> 跳过   
+ * 
+ * 可以保证:   
+ *     1. 不更新已有备份  
+ *     2. 不删除已有备份  
+ *     3. 只新增未备份的有效视频，多次执行不会重复备份
+ * 
+ *  @param {string} favId 收藏夹ID 
+ *  @throws {Error} API 响应格式异常
+ */
+const backupOneFavIncr = async (favId) => {
+    // 1. 获取收藏夹内所有视频的 ID 列表  
+    const res = await fetchFromExt(`${API_GET_FAV_IDS}?media_id=${favId}`);
+    let ids = res.data?.map(item => item.bvid) || [];
+
+    //    检查响应格式是否符合预期
+    if (res.code !== 0 || !Array.isArray(res.data)) {
+      throw new Error("API 响应格式异常")
+    }
+    
+
+    // 2. 获取当前收藏夹的备份
+    const { [STORAGE_BACKUP_KEY]: backedUpFavs = {} } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);  
+    const backedUpFav = backedUpFavs[favId] || {};  
+    //    获取已知的失效视频ID集合
+    const { [STORAGE_INVALID_IDS_KEY]: invalidIdsArray = [] } = await chrome.storage.local.get([STORAGE_INVALID_IDS_KEY]);  
+    const invalidIds = new Set(invalidIdsArray);
+
+    // 3. 过滤掉备份中已存在的ID、以及已知的失效视频ID
+    ids = ids.filter(bvid => !backedUpFav[bvid] && !invalidIds.has(bvid));
+
+    // 4. 未备份的有效视频 -> 添加到备份    
+    //    未备份的失效视频 -> 加入已知失效ID的集合，减少以后的无用请求
+    let inserts = {}
+    let newInvalidIds = new Set(invalidIds);
+    for (const bvid of ids) {
+      try {
+        const mediaInfo = await getMediaInfo(bvid);
+        if (mediaInfo.attr === 0) {
+          inserts[bvid] = mediaInfo;
+        } else {
+          newInvalidIds.add(bvid);
+        }
+      } catch (err) {
+        console.error(`获取视频 ${bvid} 的详细信息失败:`, err);
+      }
+    }
+    // console.log("收藏夹: ", favId)
+    // console.log("插入的视频: ", inserts)
+
+    // 3. 保存结果
+    const updatedFavs = {
+      ...backedUpFavs,   // 其他收藏夹保持不变
+      [favId]: {
+        ...backedUpFav,  // 当前收藏夹已有的数据保持不变
+        ...inserts       // 加入新增的数据
+      }
+    };
+    await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedFavs, [STORAGE_INVALID_IDS_KEY]: Array.from(newInvalidIds) });
+}
+
+/**
+ * 增量备份所有收藏夹
+ * 
+ * @param {string} mid 用户ID
+ * @throws {Error} 未获取到收藏夹列表
+ */
+const backupAllFavsIncr = async (mid) => {
+  const favlist = await saveFavList(mid);   // 获取最新的用户收藏夹列表
+  if (favlist === undefined) {
+    throw new Error("未获取到备份中的收藏夹列表")
+  }
+
+  for (const fav of favlist) {
+    try {
+      await backupOneFavIncr(fav.id)
+    } catch (err) {
+      console.error(`收藏夹${fav.title}(${fav.id})增量备份时出错:`, err);
+    }
+  }
+}
 
 
 /**
@@ -266,7 +377,7 @@ const saveFavList = async (mid) => {
  * 
  * 
  * @param {string} favId 收藏夹ID 
- * @throws {Error} 分页请求响应数据为空
+ * @throws {Error} API响应格式异常、获取到的视频数量不完整
  */
 const backupOneFavFull = async (favId) => {
   // 1. 分页获取当前收藏夹所有视频
@@ -303,17 +414,13 @@ const backupOneFavFull = async (favId) => {
     if (res.data.info.media_count > 0) {
       throw new Error("收藏夹不为空但未获取到任何视频，可能是 API 异常");
     }
-  } else {
-    // 进一步检查视频数量的完整性 (为什么要+1：这是B站的问题，有时候收藏夹里实际的视频数量就是莫名其妙比 count 要少一个)
-    if (mediaList.length + 1 < res.data.info.media_count) {
-      throw new Error(`收藏夹"${res.data.info.title}"(${favId})视频获取不完整：应有 ${res.data.info.media_count} 个视频，实际获取到 ${mediaList.length} 个视频`);  
-    }
   }
+  // 为什么不能用 mediaList.length === res.data.info.media_count 来检查视频数量的完整性？
+  // 因为可能会有视频设置了仅up主可见，导致实际能获取到的视频数量就是要比收藏夹视频数 count 要少
   
 
   // 2. 更新当前收藏夹备份
-  let { [STORAGE_BACKUP_KEY]: backedUpFavs } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
-  backedUpFavs = backedUpFavs || {};              // 应对 undefined 的情况
+  const { [STORAGE_BACKUP_KEY]: backedUpFavs = {} } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
   const backedUpFav = backedUpFavs[favId] || {};  // 当前收藏夹的备份数据
 
   let updates = {};
@@ -330,8 +437,8 @@ const backupOneFavFull = async (favId) => {
   }
 
   const updatedFavs = {
-    ...backedUpFavs,
-    [favId]: updates,
+    ...backedUpFavs,   // 其他收藏夹保持不变
+    [favId]: updates,  // 当前收藏夹整个替换
   }
   await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedFavs });
 };
@@ -344,38 +451,32 @@ const backupOneFavFull = async (favId) => {
  *     1. 新增收藏夹
  *     2. 删除收藏夹
  * 
- * @throws {Error} 部分收藏夹备份失败
+ * @param {string} mid 用户ID
+ * @throws {Error} 部分收藏夹备份失败、未获取到收藏夹列表
  */
-const backupAllFavsFull = async () => {
-  const { [STORAGE_FAVLIST_KEY]: favlist } = await chrome.storage.local.get([STORAGE_FAVLIST_KEY])
-  let { [STORAGE_BACKUP_KEY]: backedUpFavs } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
-  backedUpFavs = backedUpFavs || {};
-  
+const backupAllFavsFull = async (mid) => {
+  const favlist = await saveFavList(mid);   // 获取最新的用户收藏夹列表
+  if (favlist === undefined) {
+    throw new Error("未获取到备份中的收藏夹列表")
+  }
+
   // 如果收藏夹被删除，不再保留其备份
+  const { [STORAGE_BACKUP_KEY]: backedUpFavs = {} } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
   for (const favId of Object.keys(backedUpFavs)) {
     if (!favlist.some(fav => fav.id === parseInt(favId))) {
       delete backedUpFavs[favId];
-      // console.log("delete:", favId)
     }
   }
   await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: backedUpFavs });
 
 
-  // 收集错误，最后一起抛出，保证单个收藏夹失败不影响其他收藏夹执行备份
-  const errors = [];
-  // 全量备份所有收藏夹
   for (const fav of favlist) {
     try {
       await backupOneFavFull(fav.id);
     } catch (err) {
-      console.error(`收藏夹${fav.title}(${fav.id})备份失败:`, err);
-      errors.push(err)
+      console.error(`收藏夹${fav.title}(${fav.id})全量备份失败:`, err);
     }
   }
-  if (errors.length > 0) {
-    throw new Error("部分收藏夹备份失败")
-  }
-
   // 注意下面这种写法可能会因为并发过高触发限流，导致请求失败。任何一个请求失败，Promise.all就不会再继续执行剩下的任务，导致数据不全
   // const tasks = favlist.map(fav => backupFavMedias(fav.id, fav.title));
   // await Promise.all(tasks);
@@ -384,33 +485,41 @@ const backupAllFavsFull = async () => {
 
 
 /**
- * 获取用户ID  
- * 获取用户收藏夹列表  
- * 全量备份所有收藏夹
- */
-const backup = async () => {
-  try {
-    const mid = await saveMid();  
-    await saveFavList(mid);       
-    await backupAllFavsFull()   
-  } catch (err) {
-    console.error(err);
-  }
-};
-
-
-/**
  * 限定自动备份的时机:
- *     chrome.runtime.onInstalled: 安装或更新插件
- *     chrome.runtime.onStartup: 使用某个user profile启动浏览器
+ *     chrome.runtime.onInstalled: 安装或更新插件 - 执行一次全量备份
+ *     chrome.runtime.onStartup: 使用某个user profile启动浏览器 - 如果距离上一次全量备份超过 FULL_BACKUP_INTERVAL，执行全量备份，否则执行增量备份
  * 
  * 否则从 idle 中唤醒变为 active 也会执行一次
  * 参考: https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle
  */
-chrome.runtime.onInstalled.addListener(() => {
-  backup();
+chrome.runtime.onInstalled.addListener(async () => {
+  try {
+    const mid = await saveMid();  // 获取当前用户ID
+    await backupAllFavsFull(mid); // 全量备份所有收藏夹
+    await chrome.storage.local.set({ [STORAGE_LAST_FULL_BACKUP_TIME]: Date.now() });  // 更新备份时间
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-chrome.runtime.onStartup.addListener(() => {
-  backup();
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    const mid = await saveMid();  // 获取当前用户ID
+
+    // 获取上次全量备份的时间
+    const { [STORAGE_LAST_FULL_BACKUP_TIME]: lastFullBackupTime = 0 } = await chrome.storage.local.get([STORAGE_LAST_FULL_BACKUP_TIME]);
+
+    const now = Date.now();
+    if (now - lastFullBackupTime >= FULL_BACKUP_INTERVAL) {
+      // 距离上次全量备份超过预定时间间隔，执行全量备份
+      await backupAllFavsFull(mid);
+      // 更新备份时间
+      await chrome.storage.local.set({ [STORAGE_LAST_FULL_BACKUP_TIME]: now });
+    } else {
+      // 否则执行增量备份
+      await backupAllFavsIncr(mid);
+    }
+  } catch (err) {
+    console.error(err);
+  }
 });
