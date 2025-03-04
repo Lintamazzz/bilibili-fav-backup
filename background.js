@@ -179,15 +179,24 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
  * @throws {Error} 请求获取到的用户ID为空
  */
 const saveMid = async () => {
+  // 1. 从 API 获取当前登录的用户 ID
   const res = await fetchFromExt(API_GET_MYINFO);
-
-  const mid = res.data?.profile?.mid;
-  if (mid === undefined) {
+  const currentMid = res.data?.profile?.mid;
+  if (currentMid === undefined) {
     throw new Error("请求获取到的用户ID为空");
   }
 
-  await chrome.storage.local.set({ [STORAGE_MID_KEY]: mid });
-  return mid;
+  // 2. 从 storage 获取上次保存的用户 ID
+  const { [STORAGE_MID_KEY]: savedMid } = await chrome.storage.local.get([STORAGE_MID_KEY]);
+  
+  // 3. 如果发现已有备份的用户 ID 与当前用户 ID 不同，说明切换了账号
+  if (savedMid && savedMid !== currentMid) {
+    throw new Error("切换账号会导致备份数据被覆盖，建议使用新的 Chrome 个人资料来登录别的账号(需要为新的 Chrome 个人资料重新安装插件)");
+  }
+
+  // 4. 保存当前用户 ID
+  await chrome.storage.local.set({ [STORAGE_MID_KEY]: currentMid });
+  return currentMid;
 };
 
 
