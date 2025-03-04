@@ -381,7 +381,7 @@ const backupAllFavsIncr = async (mid) => {
  * 全量备份单个收藏夹 (所有视频)
  * 
  * 单个收藏夹内可能发生的所有情况:
- *     1. 新增收藏
+ *     1. 新增收藏: 有效视频 or 失效视频(从其他收藏夹移动或复制过来的)
  *     2. 取消收藏
  *     3. 视频失效
  * 
@@ -390,7 +390,7 @@ const backupAllFavsIncr = async (mid) => {
  *   遍历收藏夹中的所有视频，可能发生的所有情况:  
  *     1. 有效视频，备份存在 -> 左边存入集合   
  *     2. 有效视频，备份不存在 -> 左边存入集合（新增收藏）  
- *     3. 失效视频，备份存在 -> 右边存入集合（视频失效）  
+ *     3. 失效视频，备份存在 -> 右边存入集合（视频失效、失效视频移动或复制）  
  *     4. 失效视频，备份不存在 -> 跳过  
  *     5. 没有视频，备份存在 -> 跳过（取消收藏）  
  *   用 updates 去替换掉整个收藏夹的备份
@@ -450,8 +450,11 @@ const backupOneFavFull = async (favId) => {
     [STORAGE_BACKUP_KEY]: backedUpFavs = {},
     [STORAGE_INVALID_IDS_KEY]: invalidIdsArray = []
   } = await chrome.storage.local.get([STORAGE_BACKUP_KEY, STORAGE_INVALID_IDS_KEY]);
-  const backedUpFav = backedUpFavs[favId] || {};  // 当前收藏夹的备份数据
   const invalidIds = new Set(invalidIdsArray);    // 已知的失效视频ID集合
+  let allBackedupMedias = {};                     // 存放所有已备份的视频
+  for (const backedUpFav of Object.values(backedUpFavs)) {
+    allBackedupMedias = {...allBackedupMedias, ...backedUpFav};
+  }
 
   let updates = {};
   for (const media of mediaList) {
@@ -460,8 +463,8 @@ const backupOneFavFull = async (favId) => {
       updates[media.bvid] = media;
     } else {
       // 失效视频，只有备份存在，才右边存入
-      if (backedUpFav[media.bvid]) {
-        updates[media.bvid] = backedUpFav[media.bvid];
+      if (allBackedupMedias[media.bvid]) {
+        updates[media.bvid] = allBackedupMedias[media.bvid];
       }
       invalidIds.add(media.bvid);
     }
