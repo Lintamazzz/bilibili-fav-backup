@@ -22,7 +22,7 @@ const STORAGE_MID_KEY = "mid";             // 用户ID
 const STORAGE_FAVLIST_KEY = "favlist";     // 用户收藏夹列表
 const STORAGE_LAST_FULL_BACKUP_TIME = "last_full_backup_time";  // 上次全量备份的时间戳
 const FULL_BACKUP_INTERVAL = 24 * 60 * 60 * 1000;               // 全量备份的最小时间间隔（24小时）
-const STORAGE_INVALID_IDS_KEY = "invalid_ids";                  // 已知的失效视频ID集合
+const STORAGE_INVALID_IDS_KEY = "invalid_ids";                  // 已知的失效视频ID集合（类似于"循环不变量", 需要维护好其语义: 虽然只有增量备份时需要用到, 但在全量备份时也要更新这个集合）
 
 const API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list"             // 分页获取收藏夹视频
 const MATCH_API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list?*"     // 监听请求匹配   
@@ -285,6 +285,7 @@ const backupOneFavIncr = async (favId) => {
     // 1. 获取收藏夹内所有视频的 ID 列表  
     const res = await fetchFromExt(`${API_GET_FAV_IDS}?media_id=${favId}`);
     let ids = res.data?.map(item => item.bvid) || [];
+    let cnt = ids.length;   // 收藏夹内总的视频个数
 
     //    检查响应格式是否符合预期
     if (res.code !== 0 || !Array.isArray(res.data)) {
@@ -302,10 +303,16 @@ const backupOneFavIncr = async (favId) => {
     // 3. 过滤掉备份中已存在的ID、以及已知的失效视频ID
     ids = ids.filter(bvid => !backedUpFav[bvid] && !invalidIds.has(bvid));
 
+    //    如果需要查询的视频较多，就升级为全量备份
+    //    增量备份：需要发送 ids.length 次请求
+    //    全量备份：需要发送 Math.ceil(cnt / 40) 次请求
+    if (ids.length > Math.ceil(cnt / 40)) {
+      return await backupOneFavFull(favId);
+    }
+
     // 4. 未备份的有效视频 -> 添加到备份    
     //    未备份的失效视频 -> 加入已知失效ID的集合，减少以后的无用请求
     let inserts = {}
-    let newInvalidIds = new Set(invalidIds);
     let errorIds = [];  // 记录获取信息失败的视频ID
     for (const bvid of ids) {
       try {
@@ -313,7 +320,7 @@ const backupOneFavIncr = async (favId) => {
         if (mediaInfo.attr === 0) {
           inserts[bvid] = mediaInfo;
         } else {
-          newInvalidIds.add(bvid);
+          invalidIds.add(bvid);
         }
       } catch (err) {
         errorIds.push(bvid);
@@ -331,7 +338,10 @@ const backupOneFavIncr = async (favId) => {
         ...inserts       // 加入新增的数据
       }
     };
-    await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedFavs, [STORAGE_INVALID_IDS_KEY]: Array.from(newInvalidIds) });
+    await chrome.storage.local.set({ 
+      [STORAGE_BACKUP_KEY]: updatedFavs, 
+      [STORAGE_INVALID_IDS_KEY]: Array.from(invalidIds) 
+    });
 
     if (errorIds.length > 0) {
       throw new Error(`获取以下视频的详细信息失败: ${errorIds}`);
@@ -436,8 +446,12 @@ const backupOneFavFull = async (favId) => {
   
 
   // 2. 更新当前收藏夹备份
-  const { [STORAGE_BACKUP_KEY]: backedUpFavs = {} } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
+  const { 
+    [STORAGE_BACKUP_KEY]: backedUpFavs = {},
+    [STORAGE_INVALID_IDS_KEY]: invalidIdsArray = []
+  } = await chrome.storage.local.get([STORAGE_BACKUP_KEY, STORAGE_INVALID_IDS_KEY]);
   const backedUpFav = backedUpFavs[favId] || {};  // 当前收藏夹的备份数据
+  const invalidIds = new Set(invalidIdsArray);    // 已知的失效视频ID集合
 
   let updates = {};
   for (const media of mediaList) {
@@ -449,6 +463,7 @@ const backupOneFavFull = async (favId) => {
       if (backedUpFav[media.bvid]) {
         updates[media.bvid] = backedUpFav[media.bvid];
       }
+      invalidIds.add(media.bvid);
     }
   }
 
@@ -456,7 +471,10 @@ const backupOneFavFull = async (favId) => {
     ...backedUpFavs,   // 其他收藏夹保持不变
     [favId]: updates,  // 当前收藏夹整个替换
   }
-  await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedFavs });
+  await chrome.storage.local.set({ 
+    [STORAGE_BACKUP_KEY]: updatedFavs,
+    [STORAGE_INVALID_IDS_KEY]: Array.from(invalidIds)
+  });
 };
 
 
