@@ -102,7 +102,7 @@ const needToSkipRequest = (details) => {
 }
 
 /**
- *  监听收藏夹页面「分页获取收藏视频列表」的请求
+ *  查询出当前页面上失效视频的备份标题，然后发送给 content.js 去执行 DOM 更新操作
  * 
  *  1.获取当前页面分页请求的响应内容 (因为没办法直接拿到响应体，所以只能监听请求 -> 复制并发送相同请求 -> 拿到响应体)
  *  2.获取其中的失效视频  
@@ -156,7 +156,7 @@ const listener = async (details) => {
 
 
 /**
- * 监听分页请求
+ * 监听收藏夹页面的分页请求
  * 
  * @param {Function} callback - 回调函数
  * @param {Object} filter - 监听哪些请求
@@ -228,7 +228,7 @@ const saveFavList = async (mid) => {
  * 获取单个视频的信息
  * 
  * @param {string} bvid - 视频的BV号
- * @returns {Promise<Object>} 视频信息
+ * @returns {Promise<Object>} 视频信息 (attr = 0 表示视频有效)
  * @throws {Error} API响应格式异常、请求错误
  */
 const getMediaInfo = async (bvid) => {
@@ -275,8 +275,11 @@ const getMediaInfo = async (bvid) => {
  *     2. 不删除已有备份  
  *     3. 只新增未备份的有效视频，多次执行不会重复备份
  * 
+ * 补充：为什么不利用分页请求API，基于收藏时间排序来实现增量查询？  
+ *      因为会受到自定义排序的影响，不能保证结果一定是按收藏时间排序的
+ * 
  *  @param {string} favId 收藏夹ID 
- *  @throws {Error} API 响应格式异常
+ *  @throws {Error} API 响应格式异常、未获取到详细信息的视频ID列表
  */
 const backupOneFavIncr = async (favId) => {
     // 1. 获取收藏夹内所有视频的 ID 列表  
@@ -303,6 +306,7 @@ const backupOneFavIncr = async (favId) => {
     //    未备份的失效视频 -> 加入已知失效ID的集合，减少以后的无用请求
     let inserts = {}
     let newInvalidIds = new Set(invalidIds);
+    let errorIds = [];  // 记录获取信息失败的视频ID
     for (const bvid of ids) {
       try {
         const mediaInfo = await getMediaInfo(bvid);
@@ -312,6 +316,7 @@ const backupOneFavIncr = async (favId) => {
           newInvalidIds.add(bvid);
         }
       } catch (err) {
+        errorIds.push(bvid);
         console.error(`获取视频 ${bvid} 的详细信息失败:`, err);
       }
     }
@@ -327,26 +332,37 @@ const backupOneFavIncr = async (favId) => {
       }
     };
     await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: updatedFavs, [STORAGE_INVALID_IDS_KEY]: Array.from(newInvalidIds) });
+
+    if (errorIds.length > 0) {
+      throw new Error(`获取以下视频的详细信息失败: ${errorIds}`);
+    }
 }
 
 /**
  * 增量备份所有收藏夹
  * 
  * @param {string} mid 用户ID
- * @throws {Error} 未获取到收藏夹列表
+ * @throws {Error} 未获取到收藏夹列表、部分收藏夹备份失败
  */
 const backupAllFavsIncr = async (mid) => {
-  const favlist = await saveFavList(mid);   // 获取最新的用户收藏夹列表
+  // 1. 获取最新的用户收藏夹列表
+  const favlist = await saveFavList(mid);  
   if (favlist === undefined) {
-    throw new Error("未获取到备份中的收藏夹列表")
+    throw new Error("未获取到收藏夹列表");
   }
 
+  // 2. 增量备份每个收藏夹
+  let errorCount = 0;
   for (const fav of favlist) {
     try {
       await backupOneFavIncr(fav.id)
     } catch (err) {
-      console.error(`收藏夹${fav.title}(${fav.id})增量备份时出错:`, err);
+      errorCount += 1;
+      console.error(`收藏夹 ${fav.title} (${fav.id}) 增量备份时出错:`, err);
     }
+  }
+  if (errorCount > 0) {
+    throw new Error(`有 ${errorCount} 个收藏夹增量备份出错`);
   }
 }
 
@@ -455,12 +471,13 @@ const backupOneFavFull = async (favId) => {
  * @throws {Error} 部分收藏夹备份失败、未获取到收藏夹列表
  */
 const backupAllFavsFull = async (mid) => {
-  const favlist = await saveFavList(mid);   // 获取最新的用户收藏夹列表
+  // 1. 获取最新的用户收藏夹列表
+  const favlist = await saveFavList(mid);   
   if (favlist === undefined) {
-    throw new Error("未获取到备份中的收藏夹列表")
+    throw new Error("未获取到收藏夹列表");
   }
 
-  // 如果收藏夹被删除，不再保留其备份
+  // 2. 检查是否有收藏夹被删除，如果被删除则不再保留其备份数据
   const { [STORAGE_BACKUP_KEY]: backedUpFavs = {} } = await chrome.storage.local.get([STORAGE_BACKUP_KEY]);
   for (const favId of Object.keys(backedUpFavs)) {
     if (!favlist.some(fav => fav.id === parseInt(favId))) {
@@ -469,14 +486,23 @@ const backupAllFavsFull = async (mid) => {
   }
   await chrome.storage.local.set({ [STORAGE_BACKUP_KEY]: backedUpFavs });
 
-
+  // 3. 全量备份每个收藏夹
+  let errorCount = 0;
   for (const fav of favlist) {
     try {
       await backupOneFavFull(fav.id);
     } catch (err) {
-      console.error(`收藏夹${fav.title}(${fav.id})全量备份失败:`, err);
+      errorCount += 1;
+      console.error(`收藏夹 ${fav.title} (${fav.id}) 全量备份失败:`, err);
     }
   }
+  if (errorCount > 0) {
+    throw new Error(`有 ${errorCount} 个收藏夹全量备份失败`);
+  }
+
+  // 4. 全量备份成功后更新时间戳
+  await chrome.storage.local.set({ [STORAGE_LAST_FULL_BACKUP_TIME]: Date.now() }); 
+
   // 注意下面这种写法可能会因为并发过高触发限流，导致请求失败。任何一个请求失败，Promise.all就不会再继续执行剩下的任务，导致数据不全
   // const tasks = favlist.map(fav => backupFavMedias(fav.id, fav.title));
   // await Promise.all(tasks);
@@ -496,7 +522,6 @@ chrome.runtime.onInstalled.addListener(async () => {
   try {
     const mid = await saveMid();  // 获取当前用户ID
     await backupAllFavsFull(mid); // 全量备份所有收藏夹
-    await chrome.storage.local.set({ [STORAGE_LAST_FULL_BACKUP_TIME]: Date.now() });  // 更新备份时间
   } catch (err) {
     console.error(err);
   }
@@ -504,19 +529,15 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(async () => {
   try {
-    const mid = await saveMid();  // 获取当前用户ID
-
-    // 获取上次全量备份的时间
-    const { [STORAGE_LAST_FULL_BACKUP_TIME]: lastFullBackupTime = 0 } = await chrome.storage.local.get([STORAGE_LAST_FULL_BACKUP_TIME]);
+    // 获取当前用户ID、获取上次全量备份的时间
+    const mid = await saveMid(); 
+    const { [STORAGE_LAST_FULL_BACKUP_TIME]: lastFullBackupTime = 0 } = 
+    await chrome.storage.local.get([STORAGE_LAST_FULL_BACKUP_TIME]);
 
     const now = Date.now();
     if (now - lastFullBackupTime >= FULL_BACKUP_INTERVAL) {
-      // 距离上次全量备份超过预定时间间隔，执行全量备份
       await backupAllFavsFull(mid);
-      // 更新备份时间
-      await chrome.storage.local.set({ [STORAGE_LAST_FULL_BACKUP_TIME]: now });
     } else {
-      // 否则执行增量备份
       await backupAllFavsIncr(mid);
     }
   } catch (err) {
