@@ -2,8 +2,9 @@
  * background.js
  * 
  * 自动备份时机:  
- *    安装或更新插件 - 执行一次全量备份
- *    使用某个用户资料启动 Chrome 浏览器 - 如果距离上一次全量备份的时间间隔超过 FULL_BACKUP_INTERVAL，则执行全量备份，否则执行增量备份
+ *   - 安装或更新插件：执行一次全量备份
+ *   - 使用某个用户资料启动 Chrome 浏览器：如果距离上一次全量备份的时间间隔超过 FULL_BACKUP_INTERVAL，则执行全量备份，否则执行增量备份
+ *   - 插件运行期间：定期执行增量备份，以应对存活时间较短的视频，时间间隔为 INCR_BACKUP_INTERVAL
  * 
  * 注意：
  *   移除插件会清空 Chrome Extension Storage 中的备份数据
@@ -22,6 +23,7 @@ const STORAGE_MID_KEY = "mid";             // 用户ID
 const STORAGE_FAVLIST_KEY = "favlist";     // 用户收藏夹列表
 const STORAGE_LAST_FULL_BACKUP_TIME = "last_full_backup_time";  // 上次全量备份的时间戳
 const FULL_BACKUP_INTERVAL = 24 * 60 * 60 * 1000;               // 全量备份的最小时间间隔（24小时）
+const INCR_BACKUP_INTERVAL = 60;                                // 插件运行期间 定期执行增量备份的时间间隔（1小时）
 const STORAGE_INVALID_IDS_KEY = "invalid_ids";                  // 已知的失效视频ID集合（类似于"循环不变量", 需要维护好其语义: 虽然只有增量备份时需要用到, 但在全量备份时也要更新这个集合）
 
 const API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list"             // 分页获取收藏夹视频
@@ -272,7 +274,8 @@ const getMediaInfo = async (bvid) => {
 
 
 /**
- * 增量备份单个文件夹 (只考虑新增收藏)  
+ * 增量备份单个文件夹 (只考虑新增收藏)   
+ * 如果需要查询的视频数过多，会升级为全量备份
  * 
  * 增量备份逻辑:  
  *   获取收藏夹内所有视频的 ID 列表，遍历每一个 ID:    
@@ -542,16 +545,18 @@ const backupAllFavsFull = async (mid) => {
 
 /**
  * 限定自动备份的时机:
- *     chrome.runtime.onInstalled: 安装或更新插件 - 执行一次全量备份
- *     chrome.runtime.onStartup: 使用某个user profile启动浏览器 - 如果距离上一次全量备份超过 FULL_BACKUP_INTERVAL，执行全量备份，否则执行增量备份
+ *     chrome.runtime.onInstalled: 安装或更新插件
+ *     chrome.runtime.onStartup: 使用某个 user profile 启动浏览器
+ *     chrome.alarms.onAlarm: 插件运行期间 定期执行增量备份
  * 
  * 否则从 idle 中唤醒变为 active 也会执行一次
  * 参考: https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle
  */
 chrome.runtime.onInstalled.addListener(async () => {
   try {
-    const mid = await saveMid();  // 获取当前用户ID
-    await backupAllFavsFull(mid); // 全量备份所有收藏夹
+    const mid = await saveMid();   // 获取当前用户ID
+    await backupAllFavsFull(mid);  // 全量备份所有收藏夹
+    await createIncrBackupAlarm(); // 定期增量备份
   } catch (err) {
     console.error(err);
   }
@@ -570,7 +575,27 @@ chrome.runtime.onStartup.addListener(async () => {
     } else {
       await backupAllFavsIncr(mid);
     }
+
+    await createIncrBackupAlarm(); // 定期增量备份
   } catch (err) {
     console.error(err);
+  }
+});
+
+const createIncrBackupAlarm = async () => {
+  // 创建定时任务，如果已存在则覆盖并重新开始计时
+  await chrome.alarms.create('IncrBackup', {
+    periodInMinutes: INCR_BACKUP_INTERVAL 
+  });
+}
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === "IncrBackup") {
+      try {
+        const mid = await saveMid(); 
+        await backupAllFavsIncr(mid);
+      } catch (err) {
+        console.error(err);
+      }
   }
 });
