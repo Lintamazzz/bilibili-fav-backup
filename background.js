@@ -4,7 +4,7 @@
  * 自动备份时机:  
  *   - 安装或更新插件：执行一次全量备份
  *   - 使用某个用户资料启动 Chrome 浏览器：如果距离上一次全量备份的时间间隔超过 FULL_BACKUP_INTERVAL，则执行全量备份，否则执行增量备份
- *   - 插件运行期间：定期执行增量备份，以应对存活时间较短的视频，时间间隔为 INCR_BACKUP_INTERVAL
+ *   - 插件运行期间：定期执行增量备份，以应对存活时间较短的视频，时间间隔为 INCR_BACKUP_INTERVAL (设备休眠 或 浏览器关闭 时不会执行)
  * 
  * 注意：
  *   移除插件会清空 Chrome Extension Storage 中的备份数据
@@ -12,20 +12,20 @@
  */
 
 
-/**
- * 定义常量:
- * 1.chrome.storage.local中使用的键名
- * 2.B站API地址
- * 3.监听请求用的模式匹配地址
- */
+// chrome.storage.local 中使用的键名
 const STORAGE_BACKUP_KEY = "all_medias";   // 所有收藏夹的视频信息备份
 const STORAGE_MID_KEY = "mid";             // 用户ID
 const STORAGE_FAVLIST_KEY = "favlist";     // 用户收藏夹列表
 const STORAGE_LAST_FULL_BACKUP_TIME = "last_full_backup_time";  // 上次全量备份的时间戳
-const FULL_BACKUP_INTERVAL = 24 * 60 * 60 * 1000;               // 全量备份的最小时间间隔（24小时）
-const INCR_BACKUP_INTERVAL = 60;                                // 插件运行期间 定期执行增量备份的时间间隔（1小时）
 const STORAGE_INVALID_IDS_KEY = "invalid_ids";                  // 已知的失效视频ID集合（类似于"循环不变量", 需要维护好其语义: 虽然只有增量备份时需要用到, 但在全量备份时也要更新这个集合）
 
+// 备份策略中的时间常量
+const FULL_BACKUP_INTERVAL = 24 * 60 * 60 * 1000;     // 24 小时 (单位毫秒): 全量备份的最小时间间隔 
+const INCR_BACKUP_INTERVAL = 60;                      //  1 小时 (单位分钟): 插件运行期间 定期执行增量备份的时间间隔 
+const ALARM_TIMEOUT = 60 * 1000;                      //  1 分钟 (单位毫秒): 实际触发时间 - 预定触发时间 > 这个值, 就认为 alarm 超时了
+// 用来排除因 设备休眠 或 浏览器关闭 而延迟触发的 alarm (https://developer.chrome.com/docs/extensions/reference/api/alarms?hl=zh-cn)
+
+// B站API地址
 const API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list"             // 分页获取收藏夹视频
 const MATCH_API_LIST_MEDIA = "https://api.bilibili.com/x/v3/fav/resource/list?*"     // 监听请求匹配   
 const API_GET_MYINFO = "https://api.bilibili.com/x/space/v2/myinfo"                  // 获取用户信息
@@ -591,11 +591,19 @@ const createIncrBackupAlarm = async () => {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "IncrBackup") {
-      try {
-        const mid = await saveMid(); 
-        await backupAllFavsIncr(mid);
-      } catch (err) {
-        console.error(err);
-      }
+    const timeDiff = Date.now() - alarm.scheduledTime;
+    const isMissedAlarm = timeDiff > ALARM_TIMEOUT;
+
+    if (isMissedAlarm) {
+      // console.log(`跳过当前 Alarm, 预定时间与当前时间相差 ${Math.floor(timeDiff / 1000 / 60)} 分钟`);
+      return;
+    }
+    
+    try {
+      const mid = await saveMid(); 
+      await backupAllFavsIncr(mid);
+    } catch (err) {
+      console.error(err);
+    }
   }
 });
