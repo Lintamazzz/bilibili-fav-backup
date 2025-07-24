@@ -44,6 +44,9 @@ const API_GET_MEDIA_INFO = "https://api.bilibili.com/x/web-interface/view"      
  * @returns {Promise<Object>} 返回一个Promise对象，解析为响应数据
  */
 const fetchFromExt = async (url, method) => {
+  // 简单控制请求频率
+  await new Promise(resolve => setTimeout(resolve, 700));
+  
   const response = await fetch(url, {
     method: method || "GET",
     headers: {
